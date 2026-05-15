@@ -1,9 +1,5 @@
 import os
 import sys
-
-# Fix emoji output on Windows (cp1251 terminal)
-if sys.stdout.encoding != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8")
 import json
 import logging
 from datetime import datetime
@@ -12,11 +8,16 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, ContextTypes
 )
 
-logging.basicConfig(level=logging.INFO)
+# Налаштування логування
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = "8844824332:AAFJuC0GDd5ZQt3GbpgPkQtv04zE5Z_6C0w"
-ADMIN_ID = 6653412161  # ID адміністратора /detid
+# Отримуємо токен з змінних оточення (безпечніше для Render)
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8844824332:AAFJuC0GDd5ZQt3GbpgPkQtv04zE5Z_6C0w")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0)) if os.environ.get("ADMIN_ID") else None
 
 # ──────────────────────────────────────────────
 #  База даних фільмів MCU
@@ -81,7 +82,7 @@ for phase, films in MCU_FILMS.items():
         ALL_FILMS[film["id"]] = {**film, "phase": phase}
 
 # ──────────────────────────────────────────────
-#  Розширене зберігання даних
+#  Зберігання даних (для Render використовуємо змінні оточення)
 # ──────────────────────────────────────────────
 DATA_FILE = "user_data.json"
 ACTIVITY_FILE = "user_activity.json"
@@ -113,7 +114,6 @@ def save_activity(data: dict):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def log_activity(user_id: int, username: str, action: str, film_id: str = None):
-    """Логує дії користувача"""
     activity = load_activity()
     uid = str(user_id)
     if uid not in activity:
@@ -130,7 +130,6 @@ def log_activity(user_id: int, username: str, action: str, film_id: str = None):
         "film_id": film_id
     })
     
-    # Обмежуємо історію до 1000 дій на користувача
     if len(activity[uid]["actions"]) > 1000:
         activity[uid]["actions"] = activity[uid]["actions"][-1000:]
     
@@ -158,145 +157,7 @@ def toggle_watched(user_id: int, film_id: str) -> bool:
     return result
 
 # ──────────────────────────────────────────────
-#  Адмін функції
-# ──────────────────────────────────────────────
-async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показує статистику бота (тільки для адміна)"""
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ У вас немає доступу до цієї команди.")
-        return
-    
-    data = load_data()
-    activity = load_activity()
-    
-    total_users = len(data)
-    total_watched = sum(len(user_data["watched"]) for user_data in data.values())
-    
-    # Отримуємо останніх активних користувачів
-    recent_users = []
-    for uid, user_activity in activity.items():
-        if user_activity.get("actions"):
-            last_action = user_activity["actions"][-1]["timestamp"]
-            recent_users.append((user_activity.get("username", uid), last_action))
-    
-    recent_users.sort(key=lambda x: x[1], reverse=True)
-    recent_users = recent_users[:10]
-    
-    stats_text = (
-        f"📊 *Статистика бота*\n\n"
-        f"👥 Користувачів: {total_users}\n"
-        f"🎬 Всього переглядів: {total_watched}\n"
-        f"📈 Середній прогрес: {total_watched / total_users if total_users > 0 else 0:.1f} фільмів/користувача\n\n"
-        f"🕐 *Останні активні:*\n"
-    )
-    
-    for username, last_time in recent_users:
-        stats_text += f"• {username}: {last_time[:16]}\n"
-    
-    await update.message.reply_text(stats_text, parse_mode="Markdown")
-
-async def admin_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Експортує дані користувачів (тільки для адміна)"""
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ У вас немає доступу.")
-        return
-    
-    data = load_data()
-    activity = load_activity()
-    
-    # Створюємо звіт
-    report = {
-        "generated": datetime.now().isoformat(),
-        "users_data": data,
-        "users_activity": activity,
-        "total_users": len(data),
-        "total_actions": sum(len(u.get("actions", [])) for u in activity.values())
-    }
-    
-    # Зберігаємо тимчасовий файл
-    report_file = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with open(report_file, "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
-    
-    # Відправляємо файл адміну
-    with open(report_file, "rb") as f:
-        await update.message.reply_document(
-            document=f,
-            filename=report_file,
-            caption=f"📊 Звіт від {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-    
-    # Видаляємо тимчасовий файл
-    os.remove(report_file)
-
-async def admin_user_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показує прогрес конкретного користувача (тільки для адміна)"""
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ У вас немає доступу.")
-        return
-    
-    # Очікуємо ID користувача
-    try:
-        user_id = int(context.args[0])
-    except (IndexError, ValueError):
-        await update.message.reply_text(
-            "❌ Вкажіть ID користувача.\nПриклад: /user_progress 123456789"
-        )
-        return
-    
-    data = load_data()
-    activity = load_activity()
-    
-    uid = str(user_id)
-    if uid not in data:
-        await update.message.reply_text(f"❌ Користувач з ID {user_id} не знайдений.")
-        return
-    
-    user_data = data[uid]
-    watched_films = user_data.get("watched", [])
-    total_films = len(ALL_FILMS)
-    
-    # Отримуємо назви переглянутих фільмів
-    watched_names = [ALL_FILMS.get(fid, {}).get("title", fid) for fid in watched_films]
-    
-    # Статистика по фазах
-    phase_stats = {}
-    for phase, films in MCU_FILMS.items():
-        phase_watched = sum(1 for f in films if f["id"] in watched_films)
-        phase_stats[phase] = phase_watched
-    
-    # Отримуємо інформацію про користувача
-    user_info = activity.get(uid, {})
-    username = user_info.get("username", "Невідомо")
-    first_seen = user_info.get("first_seen", "Невідомо")
-    last_action = user_info.get("actions", [{}])[-1].get("timestamp", "Невідомо")
-    
-    # Формуємо звіт
-    report = (
-        f"📊 *Прогрес користувача*\n\n"
-        f"👤 ID: {user_id}\n"
-        f"📛 Ім'я: {username}\n"
-        f"📅 Перша поява: {first_seen[:16]}\n"
-        f"🕐 Остання дія: {last_action[:16]}\n\n"
-        f"🎬 *Загальний прогрес:*\n"
-        f"✅ Переглянуто: {len(watched_films)}/{total_films} ({len(watched_films)*100//total_films}%)\n\n"
-    )
-    
-    report += "*По фазах:*\n"
-    for phase, count in phase_stats.items():
-        phase_total = len(MCU_FILMS[phase])
-        report += f"• {phase[:30]}: {count}/{phase_total}\n"
-    
-    if watched_names:
-        report += f"\n*Переглянуті фільми:*\n"
-        report += ", ".join(watched_names[:20])
-        if len(watched_names) > 20:
-            report += f" та ще {len(watched_names) - 20}"
-    
-    await update.message.reply_text(report, parse_mode="Markdown")
-
-# ──────────────────────────────────────────────
-#  Хелпери для клавіатур
+#  Клавіатури
 # ──────────────────────────────────────────────
 def main_menu_keyboard():
     buttons = []
@@ -342,7 +203,6 @@ def film_keyboard(film_id: str, user_id: int):
 # ──────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    # Логуємо початок
     log_activity(user.id, user.username or user.first_name, "start")
     
     text = (
@@ -355,10 +215,55 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 📊 Стежити за своїм прогресом\n\n"
         "Обирай фазу 👇"
     )
+    await update.message.reply_text(text, reply_markup=main_menu_keyboard())
+
+async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для отримання свого Telegram ID"""
+    user_id = update.effective_user.id
     await update.message.reply_text(
-        text,
-        reply_markup=main_menu_keyboard()
+        f"🆔 Ваш Telegram ID: {user_id}\n\n"
+        f"Скопіюйте цей ID та вставте його в змінну ADMIN_ID в налаштуваннях Render."
     )
+
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ADMIN_ID and update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ У вас немає доступу.")
+        return
+    
+    data = load_data()
+    activity = load_activity()
+    
+    total_users = len(data)
+    total_watched = sum(len(user_data["watched"]) for user_data in data.values())
+    
+    stats_text = (
+        f"📊 *Статистика бота*\n\n"
+        f"👥 Користувачів: {total_users}\n"
+        f"🎬 Всього переглядів: {total_watched}\n"
+    )
+    
+    await update.message.reply_text(stats_text, parse_mode="Markdown")
+
+async def admin_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ADMIN_ID and update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ У вас немає доступу.")
+        return
+    
+    data = load_data()
+    report = {
+        "generated": datetime.now().isoformat(),
+        "users_data": data,
+        "total_users": len(data)
+    }
+    
+    report_file = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(report_file, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    
+    with open(report_file, "rb") as f:
+        await update.message.reply_document(document=f, filename=report_file)
+    
+    os.remove(report_file)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -367,7 +272,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     username = query.from_user.username or query.from_user.first_name
     
-    # ── Головне меню ──
     if data == "main_menu":
         log_activity(user_id, username, "back_to_menu")
         await query.edit_message_text(
@@ -375,7 +279,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu_keyboard()
         )
     
-    # ── Фаза ──
     elif data.startswith("phase:"):
         phase = data[len("phase:"):]
         log_activity(user_id, username, f"view_phase", phase)
@@ -384,33 +287,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         watched_count = sum(1 for f in films if f["id"] in watched)
         
         await query.edit_message_text(
-            f"📽️ *{phase}*\n\n"
-            f"Переглянуто: {watched_count}/{len(films)}\n\n"
-            "Натисни на фільм щоб переглянути деталі:",
+            f"📽️ *{phase}*\n\nПереглянуто: {watched_count}/{len(films)}",
             parse_mode="Markdown",
             reply_markup=phase_keyboard(phase, user_id)
         )
     
-    # ── Фільм ──
     elif data.startswith("film:"):
         film_id = data[len("film:"):]
-        log_activity(user_id, username, f"view_film", film_id)
         film = ALL_FILMS.get(film_id)
         if not film:
-            await query.edit_message_text("❌ Фільм не знайдено.")
             return
         watched = get_user_watched(user_id)
         status = "✅ Переглянуто" if film_id in watched else "⬜ Не переглянуто"
-        has_trailer = film.get("trailer") and len(film["trailer"]) > 20
         
-        text = (
-            f"{film['emoji']} *{film['title']}*\n"
-            f"📅 Рік: {film['year']}\n"
-            f"🎭 Фаза: {film['phase']}\n"
-            f"👁️ Статус: {status}\n"
-        )
-        if has_trailer:
-            text += "\n🎬 Трейлер доступний!"
+        text = f"{film['emoji']} *{film['title']}*\n📅 Рік: {film['year']}\n👁️ Статус: {status}"
         
         await query.edit_message_text(
             text,
@@ -418,7 +308,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=film_keyboard(film_id, user_id)
         )
     
-    # ── Відмітити / зняти відмітку ──
     elif data.startswith("toggle:"):
         film_id = data[len("toggle:"):]
         film = ALL_FILMS.get(film_id)
@@ -428,22 +317,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action = "mark_watched" if result else "mark_unwatched"
         log_activity(user_id, username, action, film_id)
         
-        msg = "✅ Відмічено як переглянутий!" if result else "⬜ Позначку знято."
+        msg = "✅ Відмічено!" if result else "⬜ Позначку знято."
         await query.answer(msg, show_alert=False)
         
-        # Оновлюємо картку фільму
         watched = get_user_watched(user_id)
         status = "✅ Переглянуто" if film_id in watched else "⬜ Не переглянуто"
-        has_trailer = film.get("trailer") and len(film["trailer"]) > 20
-        
-        text = (
-            f"{film['emoji']} *{film['title']}*\n"
-            f"📅 Рік: {film['year']}\n"
-            f"🎭 Фаза: {film['phase']}\n"
-            f"👁️ Статус: {status}\n"
-        )
-        if has_trailer:
-            text += "\n🎬 Трейлер доступний!"
+        text = f"{film['emoji']} *{film['title']}*\n📅 Рік: {film['year']}\n👁️ Статус: {status}"
         
         await query.edit_message_text(
             text,
@@ -451,40 +330,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=film_keyboard(film_id, user_id)
         )
     
-    # ── Прогрес ──
     elif data == "progress":
-        log_activity(user_id, username, "view_progress")
         watched = get_user_watched(user_id)
         total_all = len(ALL_FILMS)
         watched_all = len(watched)
         pct = int(watched_all / total_all * 100) if total_all else 0
         
-        # Прогрес-бар
         filled = pct // 10
         bar = "█" * filled + "░" * (10 - filled)
         
         lines = [
-            f"📊 *Твій прогрес Marvel MCU*\n",
+            f"📊 *Твій прогрес*\n",
             f"Загалом: {watched_all}/{total_all} ({pct}%)",
-            f"`[{bar}]`\n",
+            f"`[{bar}]`",
         ]
-        for phase, films in MCU_FILMS.items():
-            count = sum(1 for f in films if f["id"] in watched)
-            total = len(films)
-            phase_pct = int(count / total * 100) if total else 0
-            stars = "⭐" * (count // max(1, total // 3)) if count > 0 else ""
-            lines.append(f"• {phase}: {count}/{total} {stars}")
-        
-        if watched_all == total_all:
-            lines.append("\n🏆 Ти подивився всі фільми Marvel! Легенда!")
-        elif watched_all >= total_all * 0.8:
-            lines.append("\n🔥 Майже фінал! Ще трохи!")
-        elif watched_all >= total_all * 0.5:
-            lines.append("\n💪 Вже половина! Так тримати!")
-        elif watched_all > 0:
-            lines.append("\n🚀 Гарний початок! Продовжуй!")
-        else:
-            lines.append("\n👋 Ще жодного фільму — починай прямо зараз!")
         
         await query.edit_message_text(
             "\n".join(lines),
@@ -494,53 +353,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
     
-    # ── Підтвердження скидання ──
     elif data == "confirm_reset":
-        log_activity(user_id, username, "confirm_reset")
         await query.edit_message_text(
-            "⚠️ *Ти впевнений?*\n\nВсі позначки переглянутих фільмів будуть видалені!",
+            "⚠️ *Ти впевнений?*",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("🗑️ Так, скинути", callback_data="reset_confirmed"),
-                    InlineKeyboardButton("❌ Ні, назад", callback_data="main_menu"),
-                ]
+                [InlineKeyboardButton("🗑️ Так", callback_data="reset_confirmed"),
+                 InlineKeyboardButton("❌ Ні", callback_data="main_menu")]
             ])
         )
     
-    # ── Скидання підтверджено ──
     elif data == "reset_confirmed":
-        log_activity(user_id, username, "reset_all")
         data_all = load_data()
         uid = str(user_id)
         if uid in data_all:
             data_all[uid]["watched"] = []
             save_data(data_all)
         await query.edit_message_text(
-            "✅ Всі позначки скинуто!\n\nПочинай марафон знову 🎬",
+            "✅ Всі позначки скинуто!",
             reply_markup=main_menu_keyboard()
         )
 
 # ──────────────────────────────────────────────
-#  Команда для отримання ID
-# ──────────────────────────────────────────────
-# ──────────────────────────────────────────────
-#  Команда для отримання ID (виправлена)
-# ──────────────────────────────────────────────
-async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для отримання свого Telegram ID"""
-    user_id = update.effective_user.id
-    # Використовуємо простий текст без Markdown
-    await update.message.reply_text(
-        f"🆔 Ваш Telegram ID: {user_id}\n\n"
-        f"Скопіюйте цей ID та вставте його в змінну ADMIN_ID в коді бота."
-    )
-
-# ──────────────────────────────────────────────
-#  Запуск (виправлений)
+#  Запуск для Render
 # ──────────────────────────────────────────────
 def main():
-    """Головна функція запуску бота"""
     try:
         # Створюємо додаток
         app = Application.builder().token(BOT_TOKEN).build()
@@ -550,28 +387,19 @@ def main():
         app.add_handler(CommandHandler("getid", get_id))
         app.add_handler(CallbackQueryHandler(handle_callback))
         
-        # Якщо встановлено ADMIN_ID, додаємо адмін команди
         if ADMIN_ID:
             app.add_handler(CommandHandler("stats", admin_stats))
             app.add_handler(CommandHandler("export", admin_export))
-            app.add_handler(CommandHandler("user_progress", admin_user_progress))
             print("✅ Адмін команди активовано!")
-        else:
-            print("⚠️ Адмін команди не активовано (ADMIN_ID = None)")
         
-        print("🦸 Marvel Bot запущено!")
-        print("👇 Використайте команду /getid щоб дізнатись свій Telegram ID")
+        print("🦸 Marvel Bot запущено на Render!")
         
-        # Запускаємо бота
-        app.run_polling(drop_pending_updates=True)
+        # Запускаємо бота (без drop_pending_updates для Render)
+        app.run_polling()
         
     except Exception as e:
         print(f"❌ Помилка: {e}")
-        print("\nМожливі рішення:")
-        print("1. Перевірте підключення до інтернету")
-        print("2. Переконайтесь що токен бота правильний")
-        print("3. Спробуйте через 5-10 секунд")
-        print("4. Перевірте чи не заблоковано Telegram API")
+        logger.error(f"Помилка: {e}")
 
 if __name__ == "__main__":
     main()
